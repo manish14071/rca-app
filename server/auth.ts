@@ -25,8 +25,8 @@ export async function verifyGoogleToken(token: string) {
         googleId, // Add to schema
         password: randomBytes(16).toString('hex'),
         emailVerified: true,
-        verificationToken: undefined, // Use undefined instead of null
-    verificationTokenExpiry: undefined
+        verificationToken: null as any,
+        verificationTokenExpiry: null as any,
       });
     }
 

@@ -6,6 +6,7 @@ interface WebSocketStore {
   connect: (userId: number) => void;
   disconnect: () => void;
   sendTyping: (receiverId: number) => void;
+  sendPresence: (online: boolean) => void;
 }
 
 export const useWebSocket = create<WebSocketStore>((set, get) => ({
@@ -15,19 +16,14 @@ export const useWebSocket = create<WebSocketStore>((set, get) => ({
   connect: (userId: number) => {
     const { socket, isConnecting } = get();
 
-    // Prevent multiple connection attempts
     if (isConnecting) return;
-
-    // Force disconnect any existing connection
-    if (socket) {
-      socket.close();
-    }
+    if (socket) socket.close();
 
     set({ isConnecting: true });
 
     const reconnect = (retryCount = 0) => {
       const maxRetries = 5;
-      const baseDelay = 1000; // Start with 1 second
+      const baseDelay = 1000;
 
       if (retryCount >= maxRetries) {
         console.error('Max WebSocket reconnection attempts reached');
@@ -36,22 +32,18 @@ export const useWebSocket = create<WebSocketStore>((set, get) => ({
       }
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const host = window.location.host;
-      const wsUrl = `${protocol}//${host}/ws`;
-
-      console.log(`[WebSocket] Attempting connection (attempt ${retryCount + 1}/${maxRetries}):`, wsUrl);
-
-      const ws = new WebSocket(wsUrl);
+      const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
 
       ws.onopen = () => {
-        console.log('[WebSocket] Connected successfully');
+        console.log('[WebSocket] Connected');
         set({ socket: ws, isConnecting: false });
-
-        // Send authentication immediately after connection
+        
+        // Send initial presence and auth
         ws.send(JSON.stringify({
           type: 'auth',
           payload: { userId }
         }));
+        get().sendPresence(true);
       };
 
       ws.onerror = (error) => {
@@ -59,13 +51,12 @@ export const useWebSocket = create<WebSocketStore>((set, get) => ({
       };
 
       ws.onclose = (event) => {
-        console.log(`[WebSocket] Disconnected with code ${event.code}, reason: ${event.reason}`);
+        console.log(`[WebSocket] Disconnected: ${event.reason}`);
         set({ socket: null });
+        get().sendPresence(false);
 
-        // Don't reconnect if this was an intentional close
         if (event.code !== 1000) {
-          const delay = Math.min(baseDelay * Math.pow(2, retryCount), 10000); // Max 10 seconds
-          console.log(`[WebSocket] Attempting reconnect in ${delay}ms...`);
+          const delay = Math.min(baseDelay * Math.pow(2, retryCount), 10000);
           setTimeout(() => reconnect(retryCount + 1), delay);
         } else {
           set({ isConnecting: false });
@@ -75,46 +66,45 @@ export const useWebSocket = create<WebSocketStore>((set, get) => ({
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          console.log('[WebSocket] Received message:', data);
-
           const queryClient = (window as any).queryClient;
-          if (!queryClient) {
-            console.error('[WebSocket] QueryClient not found');
-            return;
-          }
 
           switch (data.type) {
             case 'newMessage':
-              // Invalidate both sender and receiver message queries
               queryClient.invalidateQueries({ 
                 queryKey: ['/api/messages', data.payload.senderId] 
               });
               queryClient.invalidateQueries({ 
                 queryKey: ['/api/messages', data.payload.receiverId] 
               });
-              queryClient.invalidateQueries({ 
-                queryKey: ['/api/chats'] 
-              });
               break;
 
             case 'typing':
-              console.log('[WebSocket] User is typing:', data.payload.userId);
+              console.log('[WebSocket] Typing from:', data.payload.userId);
               break;
 
             case 'userStatus':
-              console.log('[WebSocket] User status update:', data.payload);
-              const { userId: statusUserId, online } = data.payload;
-              queryClient.invalidateQueries({ 
-                queryKey: ['/api/users'] 
-              });
+              console.log('[WebSocket] Presence update:', data.payload);
+              queryClient.setQueryData(['/api/users'], (old: any[]) => 
+                old.map(user => 
+                  user.id === data.payload.userId
+                    ? { ...user, online: data.payload.online }
+                    : user
+                )
+              );
+              break;
+
+            case 'userPresence':
+              queryClient.setQueryData(['/api/users', data.payload.userId], 
+                (old: any) => ({ ...old, ...data.payload })
+              );
               break;
 
             case 'error':
-              console.error('[WebSocket] Error from server:', data.payload.message);
+              console.error('[WebSocket] Server error:', data.payload.message);
               break;
           }
         } catch (error) {
-          console.error('[WebSocket] Error parsing message:', error);
+          console.error('[WebSocket] Message error:', error);
         }
       };
     };
@@ -125,8 +115,9 @@ export const useWebSocket = create<WebSocketStore>((set, get) => ({
   disconnect: () => {
     const { socket } = get();
     if (socket) {
-      socket.close(1000, 'Intentional disconnect');
+      socket.close(1000, 'User initiated disconnect');
       set({ socket: null, isConnecting: false });
+      get().sendPresence(false);
     }
   },
 
@@ -137,8 +128,16 @@ export const useWebSocket = create<WebSocketStore>((set, get) => ({
         type: 'typing',
         payload: { receiverId }
       }));
-    } else {
-      console.warn('[WebSocket] Cannot send typing notification: not connected');
+    }
+  },
+
+  sendPresence: (online: boolean) => {
+    const { socket } = get();
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({
+        type: 'presence',
+        payload: { online }
+      }));
     }
   }
 }));

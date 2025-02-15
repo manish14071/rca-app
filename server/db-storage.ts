@@ -213,5 +213,24 @@ export class DbStorage implements IStorage {
       .where(eq(users.id, id));
   }
 
+  async updateUserProfile(userId: number, profileData: {
+    avatarUrl?: string;
+    status?: string;
+    statusEmoji?: string;
+    hasStory?: boolean;
+  }) {
+    await this.db.update(users)
+      .set(profileData)
+      .where(eq(users.id, userId));
+  }
+  
+  async updateUserPresence(userId: number, lastSeen: Date) {
+    await this.db.update(users)
+      .set({ lastSeen })
+      .where(eq(users.id, userId));
+  }
+
+
+
 
 }

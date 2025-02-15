@@ -1,3 +1,4 @@
+"use client";
 import { useEffect, useState } from 'react';
 import { useLocation } from 'wouter';
 import { Card, CardHeader, CardContent } from '@/components/ui/card.tsx';

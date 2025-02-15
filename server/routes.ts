@@ -10,10 +10,9 @@ import { mkdir } from 'fs/promises';
 import path from "path";
 import { fileURLToPath } from 'url';
 import express from 'express';
-import { DbStorage } from './db-storage.ts';
 import { OAuth2Client } from "google-auth-library";
 import { sendVerificationEmail } from "./email-service.ts";
-import { User } from '@shared/schema.ts';
+
 
 
 
@@ -452,6 +451,90 @@ export function registerRoutes(app: Express): Server {
     }
   });
 
+
+  app.get('/api/users/:id', async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      const user = await storage.getUser(userId);
+      
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      
+      // Return only necessary information
+      res.json({
+        id: user.id,
+        googleId: user.googleId,
+        email: user.email
+      });
+    } catch (error) {
+      console.error('User fetch error:', error);
+      res.status(500).json({ error: 'Failed to fetch user' });
+    }
+  });
+
+
+  // Add new user profile endpoints
+app.patch('/api/users/:id/profile', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.id);
+    const { avatarUrl, status, statusEmoji, hasStory } = req.body;
+    
+    await storage.updateUserProfile(userId, {
+      avatarUrl,
+      status,
+      statusEmoji,
+      hasStory
+    });
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Profile update error:', error);
+    res.status(500).json({ error: 'Failed to update profile' });
+  }
+});
+
+app.patch('/api/users/:id/presence', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.id);
+    const { lastSeen } = req.body;
+    
+    await storage.updateUserPresence(userId, new Date(lastSeen));
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Presence update error:', error);
+    res.status(500).json({ error: 'Failed to update presence' });
+  }
+});
+
+// Add this with other user routes
+app.get('/api/users/:id/profile', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.id);
+    const user = await storage.getUser(userId);
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    res.json({
+      id: user.id,
+      username: user.username,
+      email: user.email,
+      avatarUrl: user.avatarUrl,
+      status: user.status,
+      statusEmoji: user.statusEmoji,
+      online: user.online,
+      lastSeen: user.lastSeen,
+      hasStory: user.hasStory
+    });
+  } catch (error) {
+    console.error('Profile fetch error:', error);
+    res.status(500).json({ error: 'Failed to fetch profile' });
+  }
+});
+
+
   // Serve uploaded files
   app.use('/uploads', express.static(uploadsDir));
 
@@ -459,6 +542,7 @@ export function registerRoutes(app: Express): Server {
 
 
 
+  
 
 
   // Placeholder -  This function needs to be implemented to verify the Google token.

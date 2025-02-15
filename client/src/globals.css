@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer utilities {
+  :root {
+    --primary-chat-color: #00a884;
+    --chat-background: url('data:image/png;base64,...');
+  }
+
+  .dark {
+    --primary-chat-color: #005c4b;
+    --chat-background: url('data:image/png;base64,...');
+  }
+
+  .bg-chat-background {
+    background-image: var(--chat-background);
+    background-repeat: repeat;
+    background-size: 400px;
+    @apply opacity-10;
+  }
+
+  .dark .bg-chat-background {
+    @apply opacity-5;
+  }
+}

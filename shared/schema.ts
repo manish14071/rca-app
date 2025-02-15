@@ -11,6 +11,11 @@ export const users = pgTable("users", {
   verificationTokenExpiry: timestamp("verification_token_expiry"),
   googleId: text("google_id").unique(),
   email: text("email").notNull().unique(),
+  avatarUrl: text("avatar_url"),
+  status: text("status"),
+  statusEmoji: text("status_emoji"),
+  lastSeen: timestamp("last_seen").defaultNow(),
+  hasStory: boolean("has_story").default(false),
 });
 
 export const messages = pgTable("messages", {
@@ -30,8 +35,8 @@ export const insertUserSchema = z.object({
   password: z.string().min(6),
   googleId: z.string().optional(),
   emailVerified: z.boolean().optional(),
-  verificationToken: z.string().nullable().optional(), // Allow null
-  verificationTokenExpiry: z.date().nullable().optional(), // Allow null
+  verificationToken: z.string().optional(),
+  verificationTokenExpiry: z.date().optional(),
 });
 
 export const insertMessageSchema = z.object({
@@ -44,6 +49,7 @@ export const insertMessageSchema = z.object({
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type InsertMessage = z.infer<typeof insertMessageSchema>;
 export type User = typeof users.$inferSelect & {
+  lastSeen?: Date | null;
   emailVerified: boolean;
   verificationToken?: string | null;
 };

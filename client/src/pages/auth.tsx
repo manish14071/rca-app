@@ -49,6 +49,30 @@ export default function AuthPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [location, navigate] = useLocation();
   const { toast } = useToast();
+  const [authCheckCompleted, setAuthCheckCompleted] = useState(false);
+
+  useEffect(() => {
+    const checkExistingAuth = async () => {
+      const userId = localStorage.getItem('userId');
+      if (userId) {
+        try {
+          const response = await apiRequest('GET', `/api/users/${userId}`);
+          const user = await response.json();
+          
+          if (user.googleId) {
+            navigate('/chat');
+            return;
+          }
+        } catch (error) {
+          console.log('Session validation error:', error);
+          localStorage.removeItem('userId');
+        }
+      }
+      setAuthCheckCompleted(true);
+    };
+  
+    checkExistingAuth();
+  }, [navigate]);
 
   const form = useForm({
     resolver: zodResolver(insertUserSchema),
@@ -70,11 +94,9 @@ export default function AuthPage() {
 
       if (response.ok) {
         if (type === "register") {
-          // Show success toast and redirect
           toast({
             title: "Registration Successful",
-            description:
-              "Please check your email for verification instructions.",
+            description: "Please check your email for verification instructions.",
             variant: "default",
           });
           navigate("/verify-email");
@@ -106,8 +128,9 @@ export default function AuthPage() {
     }
   };
 
-  // Initialize Google Sign-In
   useEffect(() => {
+    if (!authCheckCompleted) return;
+
     const script = document.createElement("script");
     script.src = "https://accounts.google.com/gsi/client";
     script.async = true;
@@ -132,6 +155,7 @@ export default function AuthPage() {
             });
           }
         },
+        auto_select: true,
       });
 
       if (googleButtonRef.current) {
@@ -147,7 +171,7 @@ export default function AuthPage() {
     return () => {
       document.head.removeChild(script);
     };
-  }, [navigate, toast]);
+  }, [navigate, toast, authCheckCompleted]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background">
@@ -206,26 +230,30 @@ export default function AuthPage() {
                   <Button
                     className="w-full"
                     disabled={isLoading}
-                    onClick={() => onSubmit("register")} // This is correct
+                    onClick={() => onSubmit("register")}
                   >
                     Register
                   </Button>
                 </TabsContent>
 
-                <div className="relative my-4">
-                  <Separator />
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <span className="bg-background px-2 text-muted-foreground">
-                      Or continue with
-                    </span>
-                  </div>
-                </div>
+                {authCheckCompleted && (
+                  <>
+                    <div className="relative my-4">
+                      <Separator />
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <span className="bg-background px-2 text-muted-foreground">
+                          Or continue with
+                        </span>
+                      </div>
+                    </div>
 
-                <div
-                  ref={googleButtonRef}
-                  id="googleButton"
-                  className="w-full mt-4 flex justify-center"
-                />
+                    <div
+                      ref={googleButtonRef}
+                      id="googleButton"
+                      className="w-full mt-4 flex justify-center"
+                    />
+                  </>
+                )}
               </form>
             </Form>
           </Tabs>

@@ -1,19 +1,27 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
 
-@layer base {
-  * {
-    @apply border-border;
-  }
-
-  body {
-    @apply font-sans antialiased bg-background text-foreground;
-  }
-}
 
 #googleButton iframe {
   margin: 0 auto !important;
   width: 100% !important;
   height: 44px !important;
 }
+
+
+
+@keyframes progress {
+  to { width: 100% }
+  from { width: 0 }
+}
+.animate-progress {
+  animation: progress 2s ease-in-out;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0) }
+  25% { transform: translateX(-5px) }
+  75% { transform: translateX(5px) }
+}
+.animate-shake {
+  animation: shake 0.4s ease-in-out;
+}
+
