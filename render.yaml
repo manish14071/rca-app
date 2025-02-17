@@ -1,0 +1,13 @@
+services:
+  - name: backend
+    type: web
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    rootDir: server
+    plan: free
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
