@@ -5,111 +5,30 @@ import express3 from "express";
 import { createServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 
-// server/storage.ts
-var MemStorage = class {
-  constructor() {
-    this.users = /* @__PURE__ */ new Map();
-    this.messages = /* @__PURE__ */ new Map();
-    this.currentUserId = 1;
-    this.currentMessageId = 1;
-  }
-  async getAllUsers(exceptUserId) {
-    return Array.from(this.users.values()).filter((user) => user.id !== exceptUserId).sort((a, b) => a.username.localeCompare(b.username));
-  }
-  async getUser(id) {
-    return this.users.get(id);
-  }
-  async getUserByUsername(username) {
-    return Array.from(this.users.values()).find((user) => user.username === username);
-  }
-  async getUserByEmail(email) {
-    return Array.from(this.users.values()).find((user) => user.email === email);
-  }
-  async createUser(insertUser) {
-    const id = this.currentUserId++;
-    const user = {
-      ...insertUser,
-      id,
-      online: false,
-      email: insertUser.email ?? null,
-      googleId: insertUser.googleId ?? null,
-      password: insertUser.password ?? null
-    };
-    this.users.set(id, user);
-    return user;
-  }
-  async setUserOnline(id, online) {
-    const user = await this.getUser(id);
-    if (user) {
-      this.users.set(id, { ...user, online });
-    }
-  }
-  async createMessage(message) {
-    const id = this.currentMessageId++;
-    const newMessage = {
-      ...message,
-      id,
-      createdAt: /* @__PURE__ */ new Date(),
-      deleted: false,
-      mediaUrl: message.mediaUrl ?? null
-      // Ensure mediaUrl is string | null
-    };
-    this.messages.set(id, newMessage);
-    return newMessage;
-  }
-  async getMessage(id) {
-    return this.messages.get(id);
-  }
-  async getMessagesBetweenUsers(user1Id, user2Id) {
-    return Array.from(this.messages.values()).filter(
-      (msg) => msg.senderId === user1Id && msg.receiverId === user2Id || msg.senderId === user2Id && msg.receiverId === user1Id
-    ).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-  }
-  async deleteMessage(id) {
-    const message = await this.getMessage(id);
-    if (message) {
-      this.messages.set(id, { ...message, deleted: true });
-    }
-  }
-  async editMessage(id, content) {
-    const message = await this.getMessage(id);
-    if (message) {
-      this.messages.set(id, { ...message, content });
-    }
-  }
-  async getUserChats(userId) {
-    const allMessages = Array.from(this.messages.values()).filter((msg) => msg.senderId === userId || msg.receiverId === userId).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-    const chatUsers = /* @__PURE__ */ new Set();
-    const chats = [];
-    allMessages.forEach((msg) => {
-      const otherUserId = msg.senderId === userId ? msg.receiverId : msg.senderId;
-      if (!chatUsers.has(otherUserId)) {
-        chatUsers.add(otherUserId);
-        chats.push({ userId: otherUserId, lastMessage: msg });
-      }
-    });
-    return chats;
-  }
-  async getAllUserData() {
-    return Array.from(this.users.values());
-  }
-};
-var storage = new MemStorage();
+// server/db-storage.ts
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
 
 // shared/schema.ts
-import { pgTable, text, serial, integer, boolean, timestamp } from "drizzle-orm/pg-core";
-import { createInsertSchema } from "drizzle-zod";
+import { z } from "zod";
+import { pgTable, serial, text, timestamp, boolean, integer } from "drizzle-orm/pg-core";
 var users = pgTable("users", {
   id: serial("id").primaryKey(),
-  username: text("username").notNull().unique(),
+  username: text("username").unique(),
+  // Remove .notNull()
   password: text("password"),
   // Optional for Google auth users
-  email: text("email").unique(),
-  googleId: text("google_id").unique(),
   online: boolean("online").default(false).notNull(),
   emailVerified: boolean("email_verified").default(false).notNull(),
   verificationToken: text("verification_token"),
-  verificationTokenExpiry: timestamp("verification_token_expiry")
+  verificationTokenExpiry: timestamp("verification_token_expiry"),
+  googleId: text("google_id").unique(),
+  email: text("email").notNull().unique(),
+  avatarUrl: text("avatar_url"),
+  status: text("status"),
+  statusEmoji: text("status_emoji"),
+  lastSeen: timestamp("last_seen").defaultNow(),
+  hasStory: boolean("has_story").default(false)
 });
 var messages = pgTable("messages", {
   id: serial("id").primaryKey(),
@@ -120,31 +39,205 @@ var messages = pgTable("messages", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   deleted: boolean("deleted").default(false).notNull()
 });
-var insertUserSchema = createInsertSchema(users).pick({
-  username: true,
-  password: true,
-  email: true,
-  googleId: true
-}).partial({
-  password: true,
-  googleId: true,
-  email: true
+var insertUserSchema = z.object({
+  username: z.string().optional(),
+  // Optional for Google users
+  email: z.string().email(),
+  password: z.string().min(6),
+  googleId: z.string().optional(),
+  emailVerified: z.boolean().optional(),
+  verificationToken: z.string().optional(),
+  verificationTokenExpiry: z.date().optional()
 });
-var insertMessageSchema = createInsertSchema(messages).pick({
-  content: true,
-  senderId: true,
-  receiverId: true,
-  mediaUrl: true
+var insertMessageSchema = z.object({
+  content: z.string(),
+  senderId: z.number(),
+  receiverId: z.number(),
+  mediaUrl: z.string().nullable().optional()
+  // ✅ Allow null/undefined
 });
 
+// server/db-storage.ts
+import { eq, or, and, desc, ne, asc, gt } from "drizzle-orm";
+import dotenv from "dotenv";
+import { fileURLToPath } from "url";
+import path from "path";
+var __filename = fileURLToPath(import.meta.url);
+var __dirname = path.dirname(__filename);
+dotenv.config({ path: path.resolve(__dirname, "../.env") });
+console.log("Environment loaded from:", path.resolve(__dirname, "../.env"));
+console.log("DATABASE_URL:", process.env.DATABASE_URL?.substring(0, 20) + "...");
+var DbStorage = class {
+  constructor() {
+    const connectionString = process.env.DATABASE_URL;
+    if (!connectionString) {
+      throw new Error("DATABASE_URL is not defined");
+    }
+    const client = postgres(connectionString);
+    this.db = drizzle(client);
+  }
+  async getAllUsers(exceptUserId) {
+    return await this.db.select().from(users).where(ne(users.id, exceptUserId));
+  }
+  async getUser(id) {
+    const results = await this.db.select().from(users).where(eq(users.id, id));
+    return results[0];
+  }
+  async getUserByUsername(username) {
+    const results = await this.db.select().from(users).where(eq(users.username, username));
+    return results[0];
+  }
+  async getUserByEmail(email) {
+    const results = await this.db.select().from(users).where(eq(users.email, email));
+    return results[0];
+  }
+  async createUser(userData) {
+    const finalData = {
+      ...userData,
+      username: userData.username || userData.email
+    };
+    const result = await this.db.insert(users).values(finalData).returning();
+    return result[0];
+  }
+  async clearVerificationToken(userId) {
+    await this.db.update(users).set({
+      verificationToken: null,
+      verificationTokenExpiry: null
+    }).where(eq(users.id, userId));
+  }
+  async setUserOnline(id, online) {
+    await this.db.update(users).set({ online }).where(eq(users.id, id));
+  }
+  // Message operations
+  async createMessage(messageData) {
+    console.log("Creating message in DB:", messageData);
+    if (messageData.senderId === messageData.receiverId) {
+      throw new Error("Cannot send message to yourself");
+    }
+    const result = await this.db.insert(messages).values({
+      ...messageData,
+      createdAt: /* @__PURE__ */ new Date(),
+      deleted: false,
+      mediaUrl: messageData.mediaUrl || null
+    }).returning();
+    console.log("DB returned message:", result[0]);
+    return result[0];
+  }
+  async getMessage(id) {
+    const results = await this.db.select().from(messages).where(eq(messages.id, id));
+    return results[0];
+  }
+  async getMessagesBetweenUsers(user1Id, user2Id) {
+    return await this.db.select().from(messages).where(
+      or(
+        and(
+          eq(messages.senderId, user1Id),
+          eq(messages.receiverId, user2Id)
+        ),
+        and(
+          eq(messages.senderId, user2Id),
+          eq(messages.receiverId, user1Id)
+        )
+      )
+    ).orderBy(asc(messages.createdAt));
+  }
+  async deleteMessage(id) {
+    await this.db.update(messages).set({ deleted: true }).where(eq(messages.id, id));
+  }
+  async editMessage(id, content) {
+    await this.db.update(messages).set({ content }).where(eq(messages.id, id));
+  }
+  async getUserChats(userId) {
+    const userMessages = await this.db.select().from(messages).where(
+      or(
+        eq(messages.senderId, userId),
+        eq(messages.receiverId, userId)
+      )
+    ).orderBy(desc(messages.createdAt));
+    const chatMap = /* @__PURE__ */ new Map();
+    userMessages.forEach((msg) => {
+      const otherUserId = msg.senderId === userId ? msg.receiverId : msg.senderId;
+      if (!chatMap.has(otherUserId)) {
+        chatMap.set(otherUserId, { userId: otherUserId, lastMessage: msg });
+      }
+    });
+    return Array.from(chatMap.values());
+  }
+  async getAllUserData() {
+    return await this.db.select().from(users);
+  }
+  async getVerificationToken(token) {
+    return this.db.select().from(users).where(
+      and(
+        eq(users.verificationToken, token),
+        gt(users.verificationTokenExpiry, /* @__PURE__ */ new Date())
+      )
+    ).limit(1).then((res) => res[0]);
+  }
+  async verifyUserEmail(id) {
+    await this.db.update(users).set({
+      emailVerified: true,
+      verificationToken: null,
+      verificationTokenExpiry: null
+    }).where(eq(users.id, id));
+  }
+  async updateVerificationToken(id, token, expiry) {
+    await this.db.update(users).set({
+      verificationToken: token,
+      verificationTokenExpiry: expiry
+    }).where(eq(users.id, id));
+  }
+  async updateUserProfile(userId, profileData) {
+    await this.db.update(users).set(profileData).where(eq(users.id, userId));
+  }
+  async updateUserPresence(userId, lastSeen) {
+    await this.db.update(users).set({ lastSeen }).where(eq(users.id, userId));
+  }
+};
+
+// server/storage.ts
+var storage = new DbStorage();
+
 // server/routes.ts
-import { z } from "zod";
+import { z as z2 } from "zod";
 import { randomBytes } from "crypto";
 import { createWriteStream } from "fs";
 import { mkdir } from "fs/promises";
-import path from "path";
-import { fileURLToPath } from "url";
+import path2 from "path";
+import { fileURLToPath as fileURLToPath2 } from "url";
 import express from "express";
+import { OAuth2Client } from "google-auth-library";
+
+// server/email-service.ts
+import nodemailer from "nodemailer";
+var transporter = nodemailer.createTransport({
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true,
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASSWORD
+  }
+});
+transporter.verify((error) => {
+  if (error) console.error("SMTP Connection Error:", error);
+  else console.log("SMTP Server Ready");
+});
+async function sendVerificationEmail(email, token) {
+  const verificationUrl = `${process.env.APP_URL}/verify-email?token=${token}`;
+  await transporter.sendMail({
+    from: "Your App <noreply@yourapp.com>",
+    to: email,
+    subject: "Verify Your Email Address",
+    html: `
+      <p>Click below to verify your email:</p>
+      <a href="${verificationUrl}">Verify Email</a>
+      <p>This link expires in 1 hour.</p>
+    `
+  });
+}
+
+// server/routes.ts
 function registerRoutes(app2) {
   const httpServer = createServer(app2);
   const wss = new WebSocketServer({
@@ -241,37 +334,49 @@ function registerRoutes(app2) {
   }
   app2.post("/api/auth/register", async (req, res) => {
     try {
-      const userData = insertUserSchema.parse(req.body);
-      console.log("Registration attempt:", { username: userData.username });
-      const existingUser = await storage.getUserByUsername(userData.username);
+      const { email, password } = req.body;
+      const userData = {
+        username: email,
+        email,
+        password,
+        emailVerified: false,
+        verificationToken: randomBytes(32).toString("hex"),
+        verificationTokenExpiry: new Date(Date.now() + 36e5)
+      };
+      const validatedData = insertUserSchema.parse(userData);
+      const existingUser = await storage.getUserByEmail(email);
       if (existingUser) {
-        console.log("Registration failed: Username already exists");
-        return res.status(400).json({ error: "Username already exists" });
+        return res.status(400).json({ error: "Email already exists" });
       }
-      const user = await storage.createUser(userData);
-      console.log("Registration successful:", { id: user.id, username: user.username });
-      res.json({ id: user.id, username: user.username });
+      const user = await storage.createUser(validatedData);
+      await sendVerificationEmail(email, userData.verificationToken);
+      res.json({ message: "Check your email for verification instructions" });
     } catch (err) {
+      if (err instanceof z2.ZodError) {
+        return res.status(400).json({
+          error: "Validation failed",
+          details: err.errors
+        });
+      }
       console.error("Registration error:", err);
-      res.status(400).json({ error: "Invalid user data" });
+      res.status(400).json({ error: "Invalid registration data" });
     }
   });
   app2.post("/api/auth/login", async (req, res) => {
     try {
-      const { username, password } = insertUserSchema.parse(req.body);
-      console.log("Login attempt:", { username });
-      const user = await storage.getUserByUsername(username);
-      console.log("Found user:", user ? { id: user.id, username: user.username } : "null");
+      const { email, password } = req.body;
+      const user = await storage.getUserByEmail(email);
       if (!user || user.password !== password) {
-        console.log("Login failed: Invalid credentials");
         return res.status(401).json({ error: "Invalid credentials" });
       }
-      const allUsers = await storage.getAllUserData();
-      console.log("All users:", allUsers.map((u) => ({ id: u.id, username: u.username })));
-      console.log("Login successful:", { id: user.id, username: user.username });
-      res.json({ id: user.id, username: user.username });
+      if (!user.emailVerified) {
+        return res.status(403).json({
+          error: "Email not verified",
+          needsVerification: true
+        });
+      }
+      res.json({ id: user.id, email: user.email });
     } catch (err) {
-      console.error("Login error:", err);
       res.status(400).json({ error: "Invalid login data" });
     }
   });
@@ -289,12 +394,46 @@ function registerRoutes(app2) {
       res.status(401).json({ error: "Google authentication failed" });
     }
   });
+  app2.post("/api/auth/verify-email", async (req, res) => {
+    try {
+      const { token } = req.body;
+      const user = await storage.getVerificationToken(token);
+      if (!user) {
+        console.log("Invalid verification token:", token);
+        return res.status(400).json({ error: "Invalid or expired token" });
+      }
+      if (user.verificationTokenExpiry && /* @__PURE__ */ new Date() > new Date(user.verificationTokenExpiry)) {
+        console.log("Token expired for user:", user.id);
+        return res.status(400).json({ error: "Verification token has expired" });
+      }
+      try {
+        await storage.verifyUserEmail(user.id);
+        console.log("Successfully verified email for user:", user.id);
+        await storage.clearVerificationToken(user.id);
+        res.json({ success: true });
+      } catch (updateError) {
+        console.error("Failed to update user verification status:", updateError);
+        res.status(500).json({ error: "Failed to verify email" });
+      }
+    } catch (error) {
+      console.error("Email verification error:", error);
+      res.status(500).json({ error: "Verification failed" });
+    }
+  });
   app2.post("/api/messages", async (req, res) => {
     try {
-      const messageData = insertMessageSchema.parse(req.body);
-      console.log("Creating message:", messageData);
+      console.log("Raw message data:", req.body);
+      const messageData = insertMessageSchema.parse({ ...req.body, mediaUrl: req.body.mediaUrl || null });
+      if (!messageData.content?.trim() && !messageData.mediaUrl) {
+        return res.status(400).json({ error: "Message content or media required" });
+      }
+      console.log("Parsed message data:", messageData);
+      if (messageData.senderId === messageData.receiverId) {
+        console.error("Invalid message: sender and receiver are the same:", messageData);
+        return res.status(400).json({ error: "Cannot send message to yourself" });
+      }
       const message = await storage.createMessage(messageData);
-      console.log("Message created:", message);
+      console.log("Created message:", message);
       const receiverWs = clients.get(message.receiverId);
       if (receiverWs?.readyState === WebSocket.OPEN) {
         console.log("Broadcasting message to receiver:", message.receiverId);
@@ -306,7 +445,12 @@ function registerRoutes(app2) {
         if (senderWs?.readyState === WebSocket.OPEN) {
           senderWs.send(JSON.stringify({
             type: "newMessage",
-            payload: message
+            payload: {
+              ...message,
+              // Ensure the message contains BOTH senderId and receiverId
+              senderId: message.senderId,
+              receiverId: message.receiverId
+            }
           }));
         }
       } else {
@@ -325,9 +469,20 @@ function registerRoutes(app2) {
       if (isNaN(currentUserId) || isNaN(otherUserId)) {
         return res.status(400).json({ error: "Invalid user IDs" });
       }
-      console.log(`Fetching messages between users ${currentUserId} and ${otherUserId}`);
+      if (currentUserId === otherUserId) {
+        return res.status(400).json({ error: "Cannot fetch messages sent to yourself" });
+      }
+      console.log("Fetching messages between users:", {
+        currentUserId,
+        otherUserId
+      });
       const messages2 = await storage.getMessagesBetweenUsers(currentUserId, otherUserId);
-      console.log("Found messages:", messages2);
+      console.log("Found messages:", messages2.map((m) => ({
+        id: m.id,
+        senderId: m.senderId,
+        receiverId: m.receiverId,
+        content: m.content?.substring(0, 20) + "..."
+      })));
       res.json(messages2);
     } catch (error) {
       console.error("Error fetching messages:", error);
@@ -336,7 +491,7 @@ function registerRoutes(app2) {
   });
   app2.patch("/api/messages/:id/edit", async (req, res) => {
     const messageId = parseInt(req.params.id);
-    const content = z.string().parse(req.body.content);
+    const content = z2.string().parse(req.body.content);
     await storage.editMessage(messageId, content);
     res.json({ success: true });
   });
@@ -347,10 +502,12 @@ function registerRoutes(app2) {
   });
   app2.get("/api/users", async (req, res) => {
     const currentUserId = parseInt(req.query.currentUserId);
+    console.log("Fetching users except:", currentUserId);
     if (isNaN(currentUserId)) {
       return res.status(400).json({ error: "Invalid user ID" });
     }
     const allUsers = await storage.getAllUsers(currentUserId);
+    console.log("Found users:", allUsers.map((u) => u.id));
     res.json(allUsers);
   });
   app2.get("/api/chats", async (req, res) => {
@@ -361,9 +518,9 @@ function registerRoutes(app2) {
     const chats = await storage.getUserChats(userId);
     res.json(chats);
   });
-  const __filename3 = fileURLToPath(import.meta.url);
-  const __dirname3 = path.dirname(__filename3);
-  const uploadsDir = path.join(__dirname3, "..", "uploads");
+  const __filename4 = fileURLToPath2(import.meta.url);
+  const __dirname4 = path2.dirname(__filename4);
+  const uploadsDir = path2.join(__dirname4, "..", "uploads");
   (async () => {
     try {
       await mkdir(uploadsDir, { recursive: true });
@@ -375,8 +532,8 @@ function registerRoutes(app2) {
   app2.post("/api/upload", async (req, res) => {
     try {
       console.log("File upload request received");
-      const fileName = `${randomBytes(16).toString("hex")}${path.extname(req.headers["x-file-name"] || "")}`;
-      const filePath = path.join(uploadsDir, fileName);
+      const fileName = `${randomBytes(16).toString("hex")}${path2.extname(req.headers["x-file-name"] || "")}`;
+      const filePath = path2.join(uploadsDir, fileName);
       console.log("Saving file to:", filePath);
       const writeStream = createWriteStream(filePath);
       req.pipe(writeStream);
@@ -398,48 +555,145 @@ function registerRoutes(app2) {
       res.status(500).json({ error: "Failed to upload file" });
     }
   });
+  app2.get("/api/users/:id", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      const user = await storage.getUser(userId);
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+      res.json({
+        id: user.id,
+        googleId: user.googleId,
+        email: user.email
+      });
+    } catch (error) {
+      console.error("User fetch error:", error);
+      res.status(500).json({ error: "Failed to fetch user" });
+    }
+  });
+  app2.patch("/api/users/:id/profile", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      const { avatarUrl, status, statusEmoji, hasStory } = req.body;
+      await storage.updateUserProfile(userId, {
+        avatarUrl,
+        status,
+        statusEmoji,
+        hasStory
+      });
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Profile update error:", error);
+      res.status(500).json({ error: "Failed to update profile" });
+    }
+  });
+  app2.patch("/api/users/:id/presence", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      const { lastSeen } = req.body;
+      await storage.updateUserPresence(userId, new Date(lastSeen));
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Presence update error:", error);
+      res.status(500).json({ error: "Failed to update presence" });
+    }
+  });
+  app2.get("/api/users/:id/profile", async (req, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      const user = await storage.getUser(userId);
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+      res.json({
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        avatarUrl: user.avatarUrl,
+        status: user.status,
+        statusEmoji: user.statusEmoji,
+        online: user.online,
+        lastSeen: user.lastSeen,
+        hasStory: user.hasStory
+      });
+    } catch (error) {
+      console.error("Profile fetch error:", error);
+      res.status(500).json({ error: "Failed to fetch profile" });
+    }
+  });
   app2.use("/uploads", express.static(uploadsDir));
   return httpServer;
 }
 async function verifyGoogleToken(credential) {
-  throw new Error("Function not implemented.");
+  const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+  try {
+    const ticket = await client.verifyIdToken({
+      idToken: credential,
+      audience: process.env.GOOGLE_CLIENT_ID
+    });
+    const payload = ticket.getPayload();
+    if (!payload?.email) throw new Error("Invalid Google token");
+    let user = await storage.getUserByEmail(payload.email);
+    if (!user) {
+      user = await storage.createUser({
+        username: payload.email,
+        email: payload.email,
+        password: randomBytes(16).toString("hex"),
+        emailVerified: true,
+        googleId: payload.sub,
+        // Add to your schema
+        verificationToken: void 0,
+        // Omit or set to undefined
+        verificationTokenExpiry: void 0
+      });
+    }
+    return {
+      id: user.id,
+      username: user.username
+      // Non-null assertion
+    };
+  } catch (error) {
+    console.error("Google authentication failed:", error);
+    throw new Error("Invalid Google token");
+  }
 }
 
 // server/vite.ts
 import express2 from "express";
 import fs from "fs";
-import path3, { dirname as dirname2 } from "path";
-import { fileURLToPath as fileURLToPath3 } from "url";
+import path4, { dirname as dirname2 } from "path";
+import { fileURLToPath as fileURLToPath4 } from "url";
 import { createServer as createViteServer, createLogger } from "vite";
 
 // vite.config.ts
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import themePlugin from "@replit/vite-plugin-shadcn-theme-json";
-import path2, { dirname } from "path";
+import path3, { dirname } from "path";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
-import { fileURLToPath as fileURLToPath2 } from "url";
-var __filename = fileURLToPath2(import.meta.url);
-var __dirname = dirname(__filename);
+import { fileURLToPath as fileURLToPath3 } from "url";
+var __filename2 = fileURLToPath3(import.meta.url);
+var __dirname2 = dirname(__filename2);
 var vite_config_default = defineConfig({
   plugins: [react(), runtimeErrorOverlay(), themePlugin()],
   resolve: {
     alias: {
-      "@": path2.resolve(__dirname, "client", "src"),
-      "@shared": path2.resolve(__dirname, "shared")
+      "@": path3.resolve(__dirname2, "./client/src"),
+      "@shared": path3.resolve(__dirname2, "./shared")
     }
   },
-  root: path2.resolve(__dirname, "client"),
+  root: path3.resolve(__dirname2, "client"),
   build: {
-    outDir: path2.resolve(__dirname, "dist/public"),
+    outDir: path3.resolve(__dirname2, "dist/public"),
     emptyOutDir: true
   }
 });
 
 // server/vite.ts
 import { nanoid } from "nanoid";
-var __filename2 = fileURLToPath3(import.meta.url);
-var __dirname2 = dirname2(__filename2);
+var __filename3 = fileURLToPath4(import.meta.url);
+var __dirname3 = dirname2(__filename3);
 var viteLogger = createLogger();
 function log(message, source = "express") {
   const formattedTime = (/* @__PURE__ */ new Date()).toLocaleTimeString("en-US", {
@@ -454,7 +708,7 @@ async function setupVite(app2, server) {
   const serverOptions = {
     middlewareMode: true,
     hmr: { server },
-    allowedHosts: true
+    allowedHosts: void 0
   };
   const vite = await createViteServer({
     ...vite_config_default,
@@ -473,8 +727,8 @@ async function setupVite(app2, server) {
   app2.use("*", async (req, res, next) => {
     const url = req.originalUrl;
     try {
-      const clientTemplate = path3.resolve(
-        __dirname2,
+      const clientTemplate = path4.resolve(
+        __dirname3,
         "..",
         "client",
         "index.html"
@@ -493,7 +747,7 @@ async function setupVite(app2, server) {
   });
 }
 function serveStatic(app2) {
-  const distPath = path3.resolve(__dirname2, "public");
+  const distPath = path4.resolve(__dirname3, "public");
   if (!fs.existsSync(distPath)) {
     throw new Error(
       `Could not find the build directory: ${distPath}, make sure to build the client first`
@@ -501,7 +755,7 @@ function serveStatic(app2) {
   }
   app2.use(express2.static(distPath));
   app2.use("*", (_req, res) => {
-    res.sendFile(path3.resolve(distPath, "index.html"));
+    res.sendFile(path4.resolve(distPath, "index.html"));
   });
 }
 
@@ -511,7 +765,7 @@ app.use(express3.json());
 app.use(express3.urlencoded({ extended: false }));
 app.use((req, res, next) => {
   const start = Date.now();
-  const path4 = req.path;
+  const path5 = req.path;
   let capturedJsonResponse = void 0;
   const originalResJson = res.json;
   res.json = function(bodyJson, ...args) {
@@ -520,8 +774,8 @@ app.use((req, res, next) => {
   };
   res.on("finish", () => {
     const duration = Date.now() - start;
-    if (path4.startsWith("/api")) {
-      let logLine = `${req.method} ${path4} ${res.statusCode} in ${duration}ms`;
+    if (path5.startsWith("/api")) {
+      let logLine = `${req.method} ${path5} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
         logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
       }
@@ -546,7 +800,7 @@ app.use((req, res, next) => {
   } else {
     serveStatic(app);
   }
-  const PORT = 5e3;
+  const PORT = Number(process.env.PORT) || 5001;
   server.listen(PORT, "0.0.0.0", () => {
     log(`serving on port ${PORT}`);
   });
