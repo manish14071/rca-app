@@ -1,7 +1,10 @@
 [build]
   base = "client"
   publish = "server/public"
-  command = "npm run build-client"
+  command = "rm -rf node_modules package-lock.json && npm install && npm run build-client"
+
+[context.production.environment]
+  VITE_SERVER_URL = "https://freechat-o1cb.onrender.com/"
 
 [[redirects]]
   from = "/*"
