@@ -2,7 +2,7 @@ services:
   - name: backend
     type: web
     env: node
-    buildCommand: npm install && npm run build-server
+    buildCommand: npm install && npm run build-client && npm run build-server
     startCommand: npm run start
     rootDir: server
     plan: free
