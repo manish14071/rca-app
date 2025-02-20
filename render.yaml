@@ -3,7 +3,7 @@ services:
     name: rest-express-backend
     env: node
     plan: free
-    buildCommand: npm install && npm run build
+    buildCommand: npm install && npm run build && npm run build-client
     startCommand: npm start
     envVars:
       - key: NODE_ENV
