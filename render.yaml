@@ -1,13 +1,14 @@
 services:
-  - name: backend
-    type: web
+  - type: web
+    name: rest-express-backend
     env: node
-    buildCommand: npm install && npm run build
-    startCommand: npm run start
-    rootDir: server
     plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: chat-app
+          property: connectionString
